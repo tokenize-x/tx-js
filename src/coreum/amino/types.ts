@@ -419,11 +419,11 @@ export const dexAminoConverters: AminoConverters = {
               goodTilBlockTime: undefined,
             }
           : good_til.time != null
-          ? {
-              goodTilBlockHeight: undefined,
-              goodTilBlockTime: new Date(good_til.time),
-            }
-          : undefined
+            ? {
+                goodTilBlockHeight: 0,
+                goodTilBlockTime: new Date(good_til.time),
+              }
+            : undefined
         : undefined,
       timeInForce: time_in_force, // number -> enum
     }),

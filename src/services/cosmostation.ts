@@ -2,6 +2,7 @@ import { CoreumNetworkConfig } from "../types/coreum";
 import { cosmos } from "@cosmostation/extension-client";
 import { getOfflineSigner } from "@cosmostation/cosmos-client";
 import { OfflineSigner } from "@cosmjs/proto-signing";
+import { TxJsError } from "../errors";
 
 export const connectCosmostation = async (config: CoreumNetworkConfig) => {
   try {
@@ -27,23 +28,21 @@ export const connectCosmostation = async (config: CoreumNetworkConfig) => {
         tiny: gasPrice,
       },
     });
-  } catch (e: any) {
-    throw {
-      thrower: "connectCosmostation",
-      error: e.name === "InstallError" ? "Extension not installed." : e,
-    };
+  } catch (error) {
+    if (error instanceof Error && error.name === "InstallError") {
+      throw new TxJsError("connectCosmostation", "Extension not installed.", 4000);
+    }
+
+    throw new TxJsError("connectCosmostation", error);
   }
 };
 
 export const getCosmosOfflineSigner = async (
-  chain_id: string
+  chainId: string
 ): Promise<OfflineSigner> => {
   try {
-    return (await getOfflineSigner(chain_id)) as any;
-  } catch (e: any) {
-    throw {
-      thrower: "getCosmosOfflineSigner",
-      error: e,
-    };
+    return (await getOfflineSigner(chainId)) as unknown as OfflineSigner;
+  } catch (error) {
+    throw new TxJsError("getCosmosOfflineSigner", error);
   }
 };

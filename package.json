@@ -1,9 +1,28 @@
 {
   "name": "@pulsara/tx-js",
-  "version": "1.0.1",
-  "description": "JS/TS Library to to easily make use of the TX Blockchain",
+  "version": "1.0.2",
+  "description": "JS/TS library to easily interact with the TX blockchain",
   "main": "dist/main/index.js",
   "module": "dist/module/index.js",
+  "types": "dist/main/index.d.ts",
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/main/index.d.ts",
+      "import": "./dist/module/index.js",
+      "require": "./dist/main/index.js",
+      "default": "./dist/main/index.js"
+    }
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "homepage": "https://github.com/PulsaraIO/tx-js",
   "repository": {
     "type": "git",
@@ -11,13 +30,23 @@
   },
   "scripts": {
     "build": "rm -rf ./dist && npm run build:main && npm run build:module",
-    "test": "npx ts-node tests/client/calculateGas.test.ts",
-    "test:all": "npx ts-node tests/**/*.test.ts",
+    "prepublishOnly": "npm run build",
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx ts-node tests/unit/wallet.test.ts && npx ts-node tests/unit/calculations.test.ts && npx ts-node tests/unit/endpoints.test.ts && npx ts-node tests/unit/messages/coreum.test.ts && npx ts-node tests/unit/messages/cosmos.test.ts && npx ts-node tests/unit/messages/wasm.test.ts",
+    "test:integration": "npx ts-node tests/client/calculateGas.test.ts && npx ts-node tests/integration/queries.test.ts",
+    "test:all": "npm test",
     "build:main": "npx tsc -p tsconfig.json",
     "build:module": "npx tsc -p tsconfig.module.json",
     "generate:docs": "npx typedoc --plugin typedoc-plugin-missing-exports --plugin typedoc-plugin-markdown src/index.ts && rm ./docs/README.md"
   },
-  "keywords": [],
+  "keywords": [
+    "coreum",
+    "tx",
+    "cosmos",
+    "cosmjs",
+    "blockchain",
+    "sdk"
+  ],
   "author": "",
   "license": "ISC",
   "dependencies": {
@@ -37,19 +66,19 @@
     "cosmjs-types": "^0.9.0",
     "eventemitter3": "^5.0.0",
     "google-protobuf": "^3.21.2",
-    "ws": "^8.13.0"
+    "ws": "^8.18.0"
   },
   "devDependencies": {
-    "@babel/preset-env": "^7.21.4",
-    "@babel/preset-react": "^7.18.6",
-    "@babel/preset-typescript": "^7.21.4",
+    "@types/google-protobuf": "^3.15.12",
     "@types/node": "^18.15.9",
-    "@types/react": "^18.0.37",
     "@types/ws": "^8.5.4",
     "ts-node": "^10.9.1",
     "typedoc": "^0.24.4",
     "typedoc-plugin-markdown": "^3.15.3",
     "typedoc-plugin-missing-exports": "^2.0.0",
     "typescript": "^5.0.2"
+  },
+  "overrides": {
+    "ws": "^8.18.0"
   }
 }

@@ -1,11 +1,31 @@
 import BigNumber from "bignumber.js";
 
+function assertValidAmount(value: string, fieldName: string): BigNumber {
+  const amount = new BigNumber(value);
+
+  if (!amount.isFinite() || amount.isNaN()) {
+    throw new Error(`Invalid ${fieldName}: ${value}`);
+  }
+
+  if (amount.isNegative()) {
+    throw new Error(`${fieldName} must be non-negative`);
+  }
+
+  return amount;
+}
+
+function assertValidPrecision(precision: number, fieldName: string): void {
+  if (!Number.isInteger(precision) || precision < 0 || precision > 18) {
+    throw new Error(`${fieldName} must be an integer between 0 and 18`);
+  }
+}
+
 /**
  * @param ucore ucore to convert to CORE
  * @returns A string representing CORE value of ucore
  */
 export const ucoreToCORE = (ucore: string) => {
-  return new BigNumber(ucore).dividedBy(1000000).valueOf();
+  return assertValidAmount(ucore, "ucore").dividedBy(1000000).valueOf();
 };
 
 /**
@@ -13,7 +33,7 @@ export const ucoreToCORE = (ucore: string) => {
  * @returns A string representing ucore value of CORE
  */
 export const coreToUCORE = (core: string) => {
-  return new BigNumber(core).multipliedBy(1000000).valueOf();
+  return assertValidAmount(core, "core").multipliedBy(1000000).valueOf();
 };
 
 /**
@@ -22,6 +42,10 @@ export const coreToUCORE = (core: string) => {
  */
 export const parseFloatToRoyaltyRate = (royalty: number | string) => {
   const float = new BigNumber(royalty);
+
+  if (!float.isFinite() || float.isNaN() || float.isNegative()) {
+    throw new Error(`Invalid royalty value: ${royalty}`);
+  }
 
   return float.dividedBy(100).multipliedBy("1000000000000000000").toString();
 };
@@ -33,8 +57,11 @@ export const parseFloatToRoyaltyRate = (royalty: number | string) => {
  * @returns The converted subunit to Unit with the passed precision
  */
 export const subunitToUnit = (subunit: string, precision: number) => {
+  assertValidPrecision(precision, "precision");
   const precisionFactor = new BigNumber(10).exponentiatedBy(precision);
-  return new BigNumber(subunit).dividedBy(precisionFactor).toString();
+  return assertValidAmount(subunit, "subunit")
+    .dividedBy(precisionFactor)
+    .toString();
 };
 
 /**
@@ -44,6 +71,9 @@ export const subunitToUnit = (subunit: string, precision: number) => {
  * @returns The converted unit to subunit with the passed precision
  */
 export const unitToSubunit = (unit: string, precision: number) => {
+  assertValidPrecision(precision, "precision");
   const precisionFactor = new BigNumber(10).exponentiatedBy(precision);
-  return new BigNumber(unit).multipliedBy(precisionFactor).toString();
+  return assertValidAmount(unit, "unit")
+    .multipliedBy(precisionFactor)
+    .toString();
 };

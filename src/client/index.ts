@@ -1,7 +1,6 @@
 import {
   coreumRegistry,
   coreumAminoConverters,
-  createCoreumAminoTypes,
 } from "../coreum";
 import { cosmwasmRegistry } from "../wasm/v1";
 import { setupFTExtension } from "../coreum/extensions/ft";
@@ -14,8 +13,13 @@ import {
   getCosmosOfflineSigner,
   connectLeap,
   getLeapOfflineSigner,
+  getKeplrOfflineSigner,
 } from "../services";
-import { COREUM_CONFIG, CoreumNetworkConfig } from "../types/coreum";
+import {
+  COREUM_CONFIG,
+  CoreumNetworkConfig,
+  CoreumNetworkKey,
+} from "../types/coreum";
 import { QueryClientImpl as FeeModelClient } from "../coreum/feemodel/v1/query";
 import {
   EncodeObject,
@@ -28,12 +32,19 @@ import { TxRaw, AuthInfo, SignerInfo, Fee, TxBody } from "../cosmos";
 import { SignMode } from "cosmjs-types/cosmos/tx/signing/v1beta1/signing";
 import { ServiceClientImpl as TxServiceClient } from "cosmjs-types/cosmos/tx/v1beta1/service";
 import { PubKey } from "cosmjs-types/cosmos/crypto/secp256k1/keys";
-import { TxBody as TxBodyProto, AuthInfo as AuthInfoProto } from "cosmjs-types/cosmos/tx/v1beta1/tx";
+import {
+  TxBody as TxBodyProto,
+  AuthInfo as AuthInfoProto,
+} from "cosmjs-types/cosmos/tx/v1beta1/tx";
 import { ExtensionWallets, FeeCalculation, ClientQueryClient } from "../types";
 import {
+  assertValidCoreumAddress,
   generateWalletFromMnemonic,
   generateMultisigFromPubkeys,
+  isValidCoreumAddress,
 } from "../utils";
+import { validateRpcEndpoint, validateWsEndpoint } from "../utils/endpoints";
+import { TxJsError, toTxJsError, normalizeWalletError } from "../errors";
 import {
   DeliverTxResponse,
   GasPrice,
@@ -66,10 +77,14 @@ import {
 } from "@cosmjs/cosmwasm-stargate";
 import BigNumber from "bignumber.js";
 
-declare let window: any;
+const MAX_EVENT_QUERY_LENGTH = 512;
 
-function isSigningClient(object: any): object is SigningCosmWasmClient {
-  return "signAndBroadcast" in object;
+function isSigningClient(object: unknown): object is SigningCosmWasmClient {
+  return (
+    typeof object === "object" &&
+    object !== null &&
+    "signAndBroadcast" in object
+  );
 }
 
 interface WithExtensionOptions {
@@ -81,10 +96,12 @@ interface WithMnemonicOptions {
 }
 
 interface ClientProps {
-  network?: string;
+  network?: CoreumNetworkKey | string;
   custom_ws_endpoint?: string;
   custom_node_endpoint?: string;
   tx_memo?: string;
+  /** Allow http:// and ws:// endpoints (development only). */
+  allowInsecureEndpoints?: boolean;
 }
 
 export class Client {
@@ -94,225 +111,190 @@ export class Client {
   private _client: SigningCosmWasmClient | StargateClient | undefined;
   private _address: string | undefined;
   private _feeModel: FeeModelClient | undefined;
-  private _eventSequence: number = 0;
-  private _custom_ws_endpoint: string;
-  private _custom_node_endpoint: string;
-  private _tx_memo: string;
+  private _eventSequence = 0;
+  private readonly _config: Readonly<CoreumNetworkConfig>;
+  private readonly _customWsEndpoint?: string;
+  private readonly _customNodeEndpoint?: string;
+  private readonly _txMemo?: string;
+  private readonly _endpointOptions: { allowInsecure?: boolean };
 
-  config: CoreumNetworkConfig;
+  get config(): Readonly<CoreumNetworkConfig> {
+    return this._config;
+  }
 
   get queryClients() {
     return this._queryClient;
   }
 
   constructor(props?: ClientProps) {
-    this.config = props?.network
-      ? COREUM_CONFIG[props.network]
-      : COREUM_CONFIG.mainnet;
+    const networkKey = (props?.network ?? "mainnet") as CoreumNetworkKey;
+    const baseConfig = COREUM_CONFIG[networkKey];
 
-    this._tx_memo = props?.tx_memo || undefined;
-    this._custom_ws_endpoint = props?.custom_ws_endpoint || undefined;
-    this._custom_node_endpoint = props?.custom_node_endpoint || undefined;
+    if (!baseConfig) {
+      throw new Error(
+        `Invalid network "${props?.network}". Expected one of: mainnet, testnet, devnet`
+      );
+    }
 
-    if (props?.custom_node_endpoint && !props.network)
+    if (props?.custom_node_endpoint && !props.network) {
       throw new Error(
         "If using a custom node, please specify the type of network."
       );
+    }
+
+    this._endpointOptions = {
+      allowInsecure: props?.allowInsecureEndpoints ?? false,
+    };
+
+    this._config = Object.freeze({ ...baseConfig });
+    this._txMemo = props?.tx_memo;
+    this._customNodeEndpoint = props?.custom_node_endpoint
+      ? validateRpcEndpoint(props.custom_node_endpoint, this._endpointOptions)
+      : undefined;
+    this._customWsEndpoint = props?.custom_ws_endpoint
+      ? validateWsEndpoint(props.custom_ws_endpoint, this._endpointOptions)
+      : undefined;
   }
 
   disconnect() {
-    this._client.disconnect();
-    this._client = undefined;
-    this._tmClient.disconnect();
-    this._tmClient = undefined;
+    if (this._client) {
+      this._client.disconnect();
+      this._client = undefined;
+    }
+
+    if (this._tmClient) {
+      this._tmClient.disconnect();
+      this._tmClient = undefined;
+    }
+
+    if (this._wsClient) {
+      this._wsClient.disconnect();
+      this._wsClient = undefined;
+    }
+
     this._address = undefined;
     this._queryClient = undefined;
     this._eventSequence = 0;
     this._feeModel = undefined;
   }
 
-  /**
-   * Accessor to get the address of the current connected wallet
-   * @returns A string that represents the address or undefined, if no wallet is connected.
-   */
   get address(): string | undefined {
     return this._address;
   }
 
-  /**
-   * Accessor to get the Stargate Client
-   * @returns A Stargate client or undefined if the connection hasn't been created
-   */
   get stargate(): SigningCosmWasmClient | StargateClient | undefined {
     return this._client;
   }
 
-  /**
-   * Adds a custom offlineSigner
-   *
-   * @param offlineSigner Defines the signer to be used to create the client
-   *
-   */
   async addCustomSigner(offlineSigner: OfflineSigner) {
     try {
-      await this._createClient(offlineSigner, "addCustomSigner");
-    } catch (e) {
-      throw {
-        thrower: e.thrower || "addCustomSigner",
-        error: e,
-      };
+      const accounts = await offlineSigner.getAccounts();
+
+      if (accounts.length === 0) {
+        throw new Error("Offline signer returned no accounts");
+      }
+
+      assertValidCoreumAddress(
+        accounts[0].address,
+        this._config.chain_bech32_prefix
+      );
+
+      if (!this._tmClient) {
+        await this._initTendermintClient(this._getRpcEndpoint());
+        this._initQueryClient();
+        this._initFeeModel();
+      }
+
+      await this._createClient(offlineSigner);
+    } catch (error) {
+      throw toTxJsError("addCustomSigner", error);
     }
   }
 
-  /**
-   * Initializes the connection to the Chain, without a signer. Just for querying purposes
-   *
-   * @param options Defines the options for the connection
-   *
-   * If `withWS` is passed on the options object, a Websocket Connection will be created alongside the RPC client
-   */
   async connect(options?: { withWS?: boolean }) {
-    await this._initTendermintClient(
-      this._custom_node_endpoint || this.config.chain_rpc_endpoint
-    );
+    await this._initTendermintClient(this._getRpcEndpoint());
     await this._createClient();
     this._initQueryClient();
     this._initFeeModel();
 
     if (options?.withWS) {
-      await this._initWsClient(
-        this._custom_ws_endpoint || this.config.chain_ws_endpoint
-      );
+      await this._initWsClient(this._getWsEndpoint());
     }
   }
 
-  /**
-   * Initializes the connection to the Chain, with the selected extension wallet as signer.
-   *
-   * @param extension Defines which wallet extension to use to initialize the client.
-   * @param options Defines the options
-   *
-   * If `withWS` is passed on the options object, a WS Connection will be created alongside the RPC client
-   */
   async connectWithExtension(
     extension = ExtensionWallets.KEPLR,
     options?: WithExtensionOptions
   ) {
     try {
+      const walletConfig = this._getWalletConfig();
+      let offlineSigner: OfflineSigner;
+
       switch (extension) {
         case ExtensionWallets.COSMOSTATION:
-          await this._connectWithCosmostation();
+          offlineSigner = await this._getCosmostationSigner(walletConfig);
           break;
         case ExtensionWallets.LEAP:
-          await this._connectWithLeap();
+          offlineSigner = await this._getLeapSigner(walletConfig);
           break;
         default:
-          await this._connectWithKplr();
+          offlineSigner = await this._getKeplrSigner(walletConfig);
       }
 
-      await this._initTendermintClient(this.config.chain_rpc_endpoint);
+      await this._initTendermintClient(this._getRpcEndpoint());
+      await this._createClient(offlineSigner);
       this._initQueryClient();
       this._initFeeModel();
 
       if (options?.withWS) {
-        await this._initWsClient(this.config.chain_ws_endpoint);
+        await this._initWsClient(this._getWsEndpoint());
       }
-    } catch (e) {
-      let thrower = e.thrower || "connectWithExtension";
-      let error = e.thrower ? e.error : e;
-      let code = e.code || null;
-
-      if (e.error === "Extension not installed.") {
-        code = 4000;
-      }
-
-      if (
-        ["User rejected the request.", "Request rejected"].includes(
-          e.error?.message
-        )
-      ) {
-        error = "Request rejected";
-        code = 4001;
-      }
-
-      throw {
-        thrower,
-        error,
-        code,
-      };
+    } catch (error) {
+      throw normalizeWalletError("connectWithExtension", error);
     }
   }
 
-  /**
-   * Initializes the connection to the Chain, using the Mnemonic words to create the Signer.
-   *
-   * @param mnemonic Defines the Mnemonic words to use to create the signer
-   * @param options Defines the options
-   *
-   * If `withWS` is passed on the options object, a WS Connection will be created alongside the RPC client
-   */
-  async connectWithMnemonic(mnemonic: string, options?: WithMnemonicOptions) {
+  async connectWithMnemonic(
+    mnemonic: string,
+    options?: WithMnemonicOptions
+  ) {
     try {
       const offlineSigner = await generateWalletFromMnemonic(
         mnemonic,
-        this.config.chain_bech32_prefix
+        this._config.chain_bech32_prefix
       );
 
-      await this._initTendermintClient(this.config.chain_rpc_endpoint);
+      await this._initTendermintClient(this._getRpcEndpoint());
       this._initQueryClient();
       this._initFeeModel();
-
       await this._createClient(offlineSigner);
 
       if (options?.withWS) {
-        await this._initWsClient(this.config.chain_ws_endpoint);
+        await this._initWsClient(this._getWsEndpoint());
       }
-    } catch (e: any) {
-      throw {
-        thrower: e.thrower || "connectWithMnemonic",
-        error: e,
-      };
+    } catch (error) {
+      throw toTxJsError("connectWithMnemonic", error);
     }
   }
 
-  /**
-   * Simulates the Transaction and returns the estimated gas for the transaction plus the gas price.
-   *
-   * @param msgs An array of messages for the transaction
-   * @returns An Object that includes the following properties
-   *  - fee: StdFee
-   *  - gas_wanted: number
-   */
   async getTxFee(msgs: readonly EncodeObject[]): Promise<FeeCalculation> {
     this._isSigningClientInit();
+    this._assertConnectedAddress();
 
     const signer = this._client as SigningCosmWasmClient;
-
     const gasPrice = await this._getGasPrice();
-
-    const gas_wanted = await signer.simulate(this._address, msgs, "");
-
-    const total_gas_wanted = new BigNumber(gas_wanted)
+    const gasWanted = await signer.simulate(this._address!, msgs, "");
+    const totalGasWanted = new BigNumber(gasWanted)
       .multipliedBy(1.2)
       .integerValue()
       .toNumber();
 
     return {
-      gas_wanted: total_gas_wanted,
-      fee: calculateFee(total_gas_wanted, gasPrice),
+      gas_wanted: totalGasWanted,
+      fee: calculateFee(totalGasWanted, gasPrice),
     };
   }
 
-  /**
-   * Calculates gas by simulating the transaction with a dummy signer.
-   * Similar to Go's CalculateGas function - works without a signing client.
-   *
-   * @param msgs Messages to simulate
-   * @param options Optional configuration
-   * @param options.fromAddress Address to simulate from (optional, uses dummy if not provided)
-   * @param options.gasAdjustment Multiplier for gas (default: 1.2)
-   * @returns The estimated gas amount
-   */
   async calculateGas(
     msgs: readonly EncodeObject[],
     options?: {
@@ -326,43 +308,41 @@ export class Client {
 
     const { fromAddress, gasAdjustment = 1.2 } = options || {};
 
-    // Use provided address or generate a valid dummy bech32 address
+    if (fromAddress) {
+      assertValidCoreumAddress(fromAddress, this._config.chain_bech32_prefix);
+    }
+
     let simAddress: string;
     if (fromAddress) {
       simAddress = fromAddress;
     } else {
-      // Generate a valid bech32 address from a dummy hash
-      // This creates a valid address format that the RPC will accept
       const dummyHash = sha256(new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]));
-      const addressBytes = dummyHash.slice(0, 20); // Use first 20 bytes for address
-      simAddress = toBech32(this.config.chain_bech32_prefix, addressBytes);
+      const addressBytes = dummyHash.slice(0, 20);
+      simAddress = toBech32(this._config.chain_bech32_prefix, addressBytes);
     }
 
-    // Get account info if address is provided and client is available
     let accountNumber = 0;
     let sequence = 0;
 
     if (fromAddress && this._client) {
       try {
         const account = await this._client.getAccount(fromAddress);
-        accountNumber = account.accountNumber;
-        sequence = account.sequence;
+        if (account) {
+          accountNumber = account.accountNumber;
+          sequence = account.sequence;
+        }
       } catch {
         // If account doesn't exist, use defaults (0, 0)
       }
     }
 
-    // Build transaction for simulation
-    // Note: We'll derive the address from the dummy pubkey in _buildTxForSimulation
-    // to ensure the fee payer address matches the signer
     const txBytes = await this._buildTxForSimulation(
       msgs,
-      simAddress, // This will be overridden by derived address if not provided
+      simAddress,
       accountNumber,
       sequence
     );
 
-    // Use tx service client to simulate
     const rpcClient = createProtobufRpcClient(this._queryClient);
     const txService = new TxServiceClient(rpcClient);
 
@@ -375,156 +355,97 @@ export class Client {
     }
 
     const gasUsed = Number(simulateResponse.gasInfo.gasUsed || 0);
-    const adjustedGas = Math.ceil(gasUsed * gasAdjustment);
-
-    return adjustedGas;
+    return Math.ceil(gasUsed * gasAdjustment);
   }
 
-  /**
-   * Gets the current gas price without transaction simulation.
-   * Equivalent to Go's GetGasPrice function.
-   *
-   * @returns GasPrice object
-   */
   async getGasPrice(): Promise<GasPrice> {
-    return await this._getGasPrice();
+    return this._getGasPrice();
   }
 
-  /**
-   *
-   * @param transaction Transaction to be submitted
-   * @returns The response of the chain
-   */
   async broadcastTx(
     transaction: Uint8Array,
     options?: { timeoutMs?: number; pollIntervalMs?: number }
   ) {
     try {
+      if (!this._client) {
+        throw new Error("Client is not connected");
+      }
+
       return await this._client.broadcastTx(
         transaction,
-        options?.timeoutMs || undefined,
-        options?.pollIntervalMs || undefined
+        options?.timeoutMs,
+        options?.pollIntervalMs
       );
-    } catch (e: any) {
-      throw {
-        thrower: e.thrower || "broadcastTx",
-        error: e.error || e,
-      };
+    } catch (error) {
+      throw toTxJsError("broadcastTx", error);
     }
   }
 
-  /**
-   *
-   * @param msgs An array of messages for the Transaction
-   * @param memo An arbitrary string to add as Memo for the transaction
-   * @returns Response Object from the blockchain
-   */
   async sendTx(
     msgs: readonly EncodeObject[],
     memo?: string
   ): Promise<DeliverTxResponse> {
     try {
       this._isSigningClientInit();
+      this._assertConnectedAddress();
 
       const { fee } = await this.getTxFee(msgs);
 
       return await (this._client as SigningCosmWasmClient).signAndBroadcast(
-        this._address,
+        this._address!,
         msgs,
         fee,
-        this._tx_memo
-          ? `${this._tx_memo} ${memo ? `- ${memo}` : ""}`
-          : memo || ""
+        this._formatMemo(memo)
       );
-    } catch (e: any) {
-      throw {
-        thrower: "sendTx",
-        error: e,
-      };
+    } catch (error) {
+      throw toTxJsError("sendTx", error);
     }
   }
 
-  //  async signTx(msgs, memo, custom_sequence) {
-  //       try {
-  //           this._isSigningClientInit();
-  //           const signingClient = this._client;
-  //           const { accountNumber, sequence } = await this._client.getAccount(this.address);
-  //           const { fee } = await this.getTxFee(msgs);
-  //           const signerData = {
-  //               accountNumber,
-  //               sequence: custom_sequence || sequence,
-  //               chainId: this.config.chain_id,
-  //           };
-  //           const signed = await signingClient.sign(this.address, msgs, fee, this._tx_memo
-  //               ? `${this._tx_memo} ${memo ? `- ${memo}` : ""}`
-  //               : memo || "", signerData);
-  //           return signed;
-  //       }
-  //       catch (e) {
-  //           throw {
-  //               thrower: e.thrower || "addSignature",
-  //               error: e.error || e,
-  //           };
-  //       }
-  //   }
-
-  /**
-   *
-   * @param msgs An array of messages for the Transaction
-   * @param memo An arbitrary string to add as Memo for the transaction
-   * @returns TxRaw object to be submitted to the chain
-   */
   async signTx(
     msgs: readonly EncodeObject[],
-    memo: string = "",
-    custom_sequence?: number
+    memo = "",
+    customSequence?: number
   ): Promise<TxRaw> {
     try {
       this._isSigningClientInit();
+      this._assertConnectedAddress();
 
       const signingClient = this._client as SigningCosmWasmClient;
+      const account = await signingClient.getAccount(this._address!);
 
-      const { accountNumber, sequence } = await this._client.getAccount(
-        this.address
-      );
+      if (!account) {
+        throw new Error(`Account not found for address ${this._address}`);
+      }
+
+      const { accountNumber, sequence } = account;
       const { fee } = await this.getTxFee(msgs);
 
-      const signerData = {
-        accountNumber,
-        sequence: custom_sequence || sequence,
-        chainId: this.config.chain_id,
-      };
-
-      const signed = await signingClient.sign(
-        this.address,
+      return signingClient.sign(
+        this._address!,
         msgs,
         fee,
-        this._tx_memo
-          ? `${this._tx_memo} ${memo ? `- ${memo}` : ""}`
-          : memo || "",
-        signerData
+        this._formatMemo(memo),
+        {
+          accountNumber,
+          sequence: customSequence ?? sequence,
+          chainId: this._config.chain_id,
+        }
       );
-
-      return signed;
-    } catch (e: any) {
-      throw {
-        thrower: e.thrower || "addSignature",
-        error: e.error || e,
-      };
+    } catch (error) {
+      throw toTxJsError("signTx", error);
     }
   }
 
-  /**
-   *
-   * @param event String describing the event to subscribe to.
-   * @returns A susbcription object with the next properties
-   *  - events: EventEmitter
-   *  - unsubscribe: Method to kill the subscription to the blockchain
-   */
   async subscribeToEvent(event: string) {
     try {
-      if (this._wsClient === undefined)
+      if (!event || event.length > MAX_EVENT_QUERY_LENGTH) {
+        throw new Error("Invalid event query");
+      }
+
+      if (this._wsClient === undefined) {
         throw new Error("No Websocket client initialized");
+      }
 
       const emitter = new EventEmitter();
 
@@ -536,65 +457,53 @@ export class Client {
       });
 
       const listener = {
-        next(x: any) {
+        next: (x: { data?: unknown; events?: Record<string, string[]> }) => {
           emitter.emit(event, {
             data: x.data,
             events: x.events ? parseSubscriptionEvents(x.events) : x,
           });
         },
-        error(err: any) {
+        error: (err: unknown) => {
           emitter.emit("subscription-error", err);
         },
-        complete() {
-          emitter.emit("subscription-complete", {
-            event,
-          });
+        complete: () => {
+          emitter.emit("subscription-complete", { event });
         },
       };
 
       const subscription = stream.subscribe(listener);
-
       this._eventSequence++;
 
       return {
         events: emitter,
         unsubscribe: subscription.unsubscribe,
       };
-    } catch (e: any) {
-      throw {
-        thrower: e.thrower || "subscribeToEvent",
-        error: e,
-      };
+    } catch (error) {
+      throw toTxJsError("subscribeToEvent", error);
     }
   }
 
-  /**
-   *
-   * @param addresses An array of addresses that should be added to the Multisig Account
-   * @param threshold The minimum amount of signatures required for the transaction to be valid
-   * @returns A MultisigAccount object
-   */
   async createMultisigAccount(addresses: string[], threshold = 2) {
     try {
-      if (addresses.length < 2)
-        throw {
-          thrower: "createMultisigAccount",
-          error: new Error("addresses param must be at least of length: 2"),
-        };
+      if (addresses.length < 2) {
+        throw new Error("addresses param must be at least of length: 2");
+      }
 
-      const pubkeys = [];
+      if (!this._client) {
+        throw new Error("Client is not connected");
+      }
 
-      for (var i = 0; i < addresses.length; i++) {
-        const account = await this._client.getAccount(addresses[i]);
+      const pubkeys: string[] = [];
 
-        if (!account || !account.pubkey)
-          throw {
-            thrower: "createMultisigAccount",
-            error: new Error(
-              addresses[i] +
-                " has no pubkey on chain, this address will need to send a transaction to appear on chain."
-            ),
-          };
+      for (const address of addresses) {
+        assertValidCoreumAddress(address, this._config.chain_bech32_prefix);
+        const account = await this._client.getAccount(address);
+
+        if (!account?.pubkey) {
+          throw new Error(
+            `${address} has no pubkey on chain, this address will need to send a transaction to appear on chain.`
+          );
+        }
 
         pubkeys.push(account.pubkey.value);
       }
@@ -602,21 +511,60 @@ export class Client {
       return generateMultisigFromPubkeys(
         pubkeys,
         threshold,
-        this.config.chain_bech32_prefix
+        this._config.chain_bech32_prefix
       );
-    } catch (e: any) {
-      throw {
-        thrower: e.thrower || "createMultisigAccount",
-        error: e.error || e,
-      };
+    } catch (error) {
+      throw toTxJsError("createMultisigAccount", error);
+    }
+  }
+
+  static getRegistry() {
+    const registryTypes: ReadonlyArray<[string, GeneratedType]> = [
+      ...defaultRegistryTypes,
+      ...coreumRegistry,
+      ...cosmwasmRegistry,
+    ];
+    return new Registry(registryTypes);
+  }
+
+  private _formatMemo(memo?: string): string {
+    if (this._txMemo) {
+      return memo ? `${this._txMemo} - ${memo}` : this._txMemo;
+    }
+
+    return memo || "";
+  }
+
+  private _getRpcEndpoint(): string {
+    return this._customNodeEndpoint ?? this._config.chain_rpc_endpoint;
+  }
+
+  private _getWsEndpoint(): string {
+    return this._customWsEndpoint ?? this._config.chain_ws_endpoint;
+  }
+
+  private _getWalletConfig(): Readonly<CoreumNetworkConfig> {
+    return Object.freeze({
+      ...this._config,
+      chain_rpc_endpoint: this._getRpcEndpoint(),
+      chain_ws_endpoint: this._getWsEndpoint(),
+    });
+  }
+
+  private _assertConnectedAddress(): void {
+    if (!this._address) {
+      throw new Error("No connected wallet address");
+    }
+
+    if (!isValidCoreumAddress(this._address, this._config.chain_bech32_prefix)) {
+      throw new Error(`Invalid connected address: ${this._address}`);
     }
   }
 
   private async _getGasPrice() {
     const gasPriceMultiplier = 1.1;
-    // the param can be change via governance
-    const feemodelParams = await this._feeModel.Params({});
-    const minGasPriceRes = await this._feeModel.MinGasPrice({});
+    const feemodelParams = await this._feeModel!.Params({});
+    const minGasPriceRes = await this._feeModel!.MinGasPrice({});
     const minGasPrice = decodeCosmosSdkDecFromProto(
       minGasPriceRes.minGasPrice?.amount || ""
     );
@@ -625,6 +573,7 @@ export class Client {
     const initialGasPrice = decodeCosmosSdkDecFromProto(
       feemodelParams.params?.model?.initialGasPrice || ""
     ).toFloatApproximation();
+
     if (gasPrice > initialGasPrice) {
       gasPrice = initialGasPrice;
     }
@@ -634,50 +583,32 @@ export class Client {
     );
   }
 
-  /**
-   * Builds a transaction for simulation with a dummy signer.
-   * Similar to Go's BuildTxForSimulation function.
-   *
-   * @private
-   * @param msgs Messages to simulate
-   * @param fromAddress Address to simulate from
-   * @param accountNumber Account number
-   * @param sequence Sequence number
-   * @returns Encoded transaction bytes ready for simulation
-   */
   private async _buildTxForSimulation(
     msgs: readonly EncodeObject[],
     fromAddress: string,
-    accountNumber: number = 0,
-    sequence: number = 0
+    accountNumber = 0,
+    sequence = 0
   ): Promise<Uint8Array> {
     if (!this._queryClient) {
       throw new Error("Query client not initialized. Call connect() first.");
     }
 
     const registry = Client.getRegistry();
-
-    // Create dummy public key (33 bytes for secp256k1 compressed pubkey)
     const dummyPubKeyBytes = new Uint8Array(33).fill(0);
-    dummyPubKeyBytes[0] = 0x02; // Set compression flag
+    dummyPubKeyBytes[0] = 0x02;
 
     const dummyPubKey: PubKey = {
       key: dummyPubKeyBytes,
     };
 
-    // Derive address from the dummy pubkey to ensure consistency
-    // Cosmos SDK derives addresses as: RIPEMD160(SHA256(pubkey))
     const pubkeyHash = sha256(dummyPubKeyBytes);
     const addressBytes = ripemd160(pubkeyHash).slice(0, 20);
     const derivedAddress = toBech32(
-      this.config.chain_bech32_prefix,
+      this._config.chain_bech32_prefix,
       addressBytes
     );
-    // Use derived address to ensure fee payer matches signer
-    // This is important for simulation - the RPC expects consistency
     const finalAddress = fromAddress || derivedAddress;
 
-    // Create dummy signer info
     const signerInfo: SignerInfo = {
       publicKey: {
         typeUrl: "/cosmos.crypto.secp256k1.PubKey",
@@ -691,26 +622,20 @@ export class Client {
       sequence: BigInt(sequence),
     };
 
-    // Create dummy fee
-    // Leave payer empty for simulation - RPC will use the first signer as payer
     const fee: Fee = {
       amount: [],
-      gasLimit: BigInt(0), // Will be filled by simulation
-      payer: "", // Empty payer means first signer is the payer (standard behavior)
+      gasLimit: BigInt(0),
+      payer: "",
       granter: "",
     };
 
-    // Create auth info
     const authInfo: AuthInfoProto = {
       signerInfos: [signerInfo],
       fee: fee,
     };
 
-    // Build the transaction body
     const body: TxBodyProto = {
       messages: msgs.map((msg) => {
-        // EncodeObject.value is already a Uint8Array, but we need to encode
-        // the message object itself using the registry
         const encoded = registry.encode(msg);
         return {
           typeUrl: msg.typeUrl,
@@ -723,30 +648,23 @@ export class Client {
       nonCriticalExtensionOptions: [],
     };
 
-    // Encode body and auth info using protobuf encoders
     const bodyBytes = TxBodyProto.encode(body).finish();
     const authInfoBytes = AuthInfoProto.encode(authInfo).finish();
-
-    // Create dummy signature (64 bytes for secp256k1 signature)
     const dummySignature = new Uint8Array(64).fill(0);
 
-    // Create TxRaw
     const txRaw: TxRaw = {
       bodyBytes: bodyBytes,
       authInfoBytes: authInfoBytes,
       signatures: [dummySignature],
     };
 
-    // Serialize TxRaw to bytes for simulation
-    // TxRaw is already in the correct format, we just need to encode it
-    const txBytes = TxRaw.encode(txRaw).finish();
-
-    return txBytes;
+    return TxRaw.encode(txRaw).finish();
   }
 
   private _isSigningClientInit() {
-    if (!this._client || !isSigningClient(this._client))
+    if (!this._client || !isSigningClient(this._client)) {
       throw new Error("Signing Client is not initialized");
+    }
   }
 
   private async _initTendermintClient(rpcEndpoint: string) {
@@ -755,7 +673,7 @@ export class Client {
 
   private _initQueryClient() {
     this._queryClient = QueryClient.withExtensions(
-      this._tmClient,
+      this._tmClient!,
       setupFTExtension,
       setupNFTExtension,
       setupNFTBetaExtension,
@@ -774,114 +692,79 @@ export class Client {
   }
 
   private _initFeeModel() {
-    const rpcClient = createProtobufRpcClient(this._queryClient);
+    const rpcClient = createProtobufRpcClient(this._queryClient!);
     this._feeModel = new FeeModelClient(rpcClient);
   }
 
   private async _initWsClient(wsEndpoint: string) {
     this._wsClient = new WebsocketClient(wsEndpoint);
-    this.subscribeToEvent("tm.event='NewBlock'");
+    await this.subscribeToEvent("tm.event='NewBlock'");
   }
 
-  private async _createClient(
-    offlineSigner?: OfflineSigner,
-    type = "notAddCustomSigner"
-  ) {
-    try {
-      if (!offlineSigner) {
-        this._client = await StargateClient.create(this._tmClient);
-        return;
+  private async _createClient(offlineSigner?: OfflineSigner) {
+    const registry = Client.getRegistry();
+    const clientOptions = {
+      registry,
+      gasPrice: GasPrice.fromString(this._config.gas_price),
+    };
+
+    if (!offlineSigner) {
+      if (!this._tmClient) {
+        throw new Error("Tendermint client is not initialized");
       }
 
-      const [{ address }] = await offlineSigner.getAccounts();
-      this._address = address;
+      this._client = await StargateClient.create(this._tmClient);
+      return;
+    }
 
-      const registry = Client.getRegistry();
+    const [{ address }] = await offlineSigner.getAccounts();
+    this._address = address;
 
-      // signing client
-      this._client = await SigningCosmWasmClient.connectWithSigner(
-        this.config.chain_rpc_endpoint,
+    if (this._tmClient) {
+      this._client = await SigningCosmWasmClient.createWithSigner(
+        this._tmClient,
         offlineSigner,
-        {
-          registry: registry,
-          gasPrice: GasPrice.fromString(this.config.gas_price),
-        }
+        clientOptions
       );
-      (this._client as any).aminoTypes.register = {
-        ...(this._client as any).aminoTypes.register,
-        ...coreumAminoConverters,
-      };
-    } catch (e: any) {
-      throw {
-        thrower: e.thrower || "_createClient",
-        error: e,
-      };
-    }
-  }
-
-  private async _connectWithKplr() {
-    try {
-      await connectKeplr(this.config);
-
-      await window.keplr.enable(this.config.chain_id);
-      // get offline signer for signing txs
-      const offlineSigner = await (window as any).getOfflineSignerAuto(
-        this.config.chain_id
+    } else {
+      this._client = await SigningCosmWasmClient.connectWithSigner(
+        this._getRpcEndpoint(),
+        offlineSigner,
+        clientOptions
       );
-
-      await this._createClient(offlineSigner);
-    } catch (e: any) {
-      throw {
-        thrower: "_connectWithKplr",
-        error: e.thrower ? e.error : e,
-      };
     }
+
+    const clientWithAmino = this._client as SigningCosmWasmClient & {
+      aminoTypes: { register: Record<string, unknown> };
+    };
+
+    // CosmJS exposes aminoTypes as a private field; merge Coreum converters at runtime.
+    (clientWithAmino as unknown as { aminoTypes: { register: Record<string, unknown> } }).aminoTypes.register = {
+      ...(clientWithAmino as unknown as { aminoTypes: { register: Record<string, unknown> } }).aminoTypes.register,
+      ...coreumAminoConverters,
+    };
   }
 
-  private async _connectWithCosmostation() {
-    try {
-      await connectCosmostation(this.config);
-
-      const provider = await cosmos();
-      await provider.requestAccount(this.config.chain_name);
-
-      const offlineSigner = await getCosmosOfflineSigner(this.config.chain_id);
-
-      await this._createClient(offlineSigner);
-    } catch (e: any) {
-      throw {
-        thrower: e.thrower || "_connectWithCosmosation",
-        error: e.thrower ? e.error : e,
-      };
-    }
+  private async _getKeplrSigner(
+    walletConfig: Readonly<CoreumNetworkConfig>
+  ): Promise<OfflineSigner> {
+    await connectKeplr(walletConfig);
+    return getKeplrOfflineSigner(walletConfig.chain_id);
   }
 
-  private async _connectWithLeap() {
-    try {
-      await connectLeap(this.config);
-
-      const offlineSigner = await getLeapOfflineSigner(this.config.chain_id);
-
-      await this._createClient(offlineSigner);
-    } catch (e: any) {
-      throw {
-        thrower: e.thrower || "_connectWithLeap",
-        error: e.thrower ? e.error : e,
-      };
-    }
+  private async _getCosmostationSigner(
+    walletConfig: Readonly<CoreumNetworkConfig>
+  ): Promise<OfflineSigner> {
+    await connectCosmostation(walletConfig);
+    const provider = await cosmos();
+    await provider.requestAccount(walletConfig.chain_name);
+    return getCosmosOfflineSigner(walletConfig.chain_id);
   }
 
-  /**
-   *
-   * @returns A Registry of the Cosmos + Coreum Custom Messages.
-   */
-  static getRegistry() {
-    // register default and custom messages
-    let registryTypes: ReadonlyArray<[string, GeneratedType]> = [
-      ...defaultRegistryTypes,
-      ...coreumRegistry,
-      ...cosmwasmRegistry,
-    ];
-    return new Registry(registryTypes);
+  private async _getLeapSigner(
+    walletConfig: Readonly<CoreumNetworkConfig>
+  ): Promise<OfflineSigner> {
+    await connectLeap(walletConfig);
+    return getLeapOfflineSigner(walletConfig.chain_id);
   }
 }

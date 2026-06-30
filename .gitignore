@@ -346,3 +346,10 @@ healthchecksdb
 .DS_Store
 .DS_Store?
 .idea
+
+# Node / environment
+node_modules/
+dist/
+.env
+.env.*
+!.env.example

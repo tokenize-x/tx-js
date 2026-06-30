@@ -80,7 +80,9 @@ await client.connect();
 // Uses my-rpc.example.com for RPC and WS; chain_id and prefix remain testnet.
 ```
 
-When connecting with a wallet (`connectWithExtension`), the client uses `config.chain_rpc_endpoint` for the Stargate/CosmWasm connection. So if you set `custom_node_endpoint`, that custom RPC is used for the signing client as well. The wallet (Keplr, etc.) still uses the chain_id from the selected network; ensure your custom node serves that chain.
+When connecting with a wallet (`connectWithExtension`) or mnemonic (`connectWithMnemonic`), the client uses the same resolved RPC and WebSocket endpoints as `connect()`, including any custom overrides.
+
+`client.config` is read-only. Wallet services receive a frozen snapshot with the resolved RPC endpoints at connection time.
 
 ---
 

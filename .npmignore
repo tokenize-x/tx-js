@@ -1,8 +1,5 @@
+/dist
 /node_modules
-/src
-/docs
-CHANGELOG.md
-package-lock.json
-tsconfig.json
-tsconfig.module.json
-.gitignore
+.env
+.env.*
+!.env.example
