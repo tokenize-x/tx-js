@@ -1,6 +1,6 @@
 # Tests
 
-This directory contains tests for the `@pulsara/tx-js` package.
+This directory contains tests for the `@tokenize-x/tx-js` package.
 
 ## Test Structure
 

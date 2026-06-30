@@ -39,7 +39,7 @@ Explorer base URLs follow the pattern `https://explorer.<network>-1.coreum.dev`.
 Set the network in the constructor; the client loads the corresponding config from `COREUM_CONFIG`:
 
 ```typescript
-import { Client, CoreumNetwork } from "@pulsara/tx-js";
+import { Client, CoreumNetwork } from "@tokenize-x/tx-js";
 
 // Mainnet (default if omitted)
 const client = new Client({ network: CoreumNetwork.MAINNET });

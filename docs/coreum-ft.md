@@ -7,7 +7,7 @@ The FT module lets you issue, mint, burn, freeze, whitelist, and manage fungible
 Token behavior is controlled by **features** set at issue time. Import from `tx-js`:
 
 ```typescript
-import { Feature } from "@pulsara/tx-js";
+import { Feature } from "@tokenize-x/tx-js";
 ```
 
 | Value                                   | Description                                        |
@@ -57,7 +57,7 @@ Issues a new fungible token.
 Example:
 
 ```typescript
-import { Client, FT, Feature } from "@pulsara/tx-js";
+import { Client, FT, Feature } from "@tokenize-x/tx-js";
 
 const msg = FT.Issue({
   issuer: client.address!,

@@ -10,7 +10,7 @@ The NFT module supports two layers on Coreum:
 Class behavior is controlled by **class features** set at issue time. Import from `tx-js`:
 
 ```typescript
-import { ClassFeature } from "@pulsara/tx-js";
+import { ClassFeature } from "@tokenize-x/tx-js";
 ```
 
 | Value                          | Description                                 |
@@ -56,7 +56,7 @@ import {
   NFT,
   ClassFeature,
   parseFloatToRoyaltyRate,
-} from "@pulsara/tx-js";
+} from "@tokenize-x/tx-js";
 
 const msg = NFT.IssueClass({
   issuer: client.address!,

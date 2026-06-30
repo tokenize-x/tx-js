@@ -33,7 +33,7 @@ All message builders return `{ typeUrl, value }` for use with `client.sendTx([ms
 Example:
 
 ```typescript
-import { Bank } from "@pulsara/tx-js";
+import { Bank } from "@tokenize-x/tx-js";
 const msg = Bank.Send({
   fromAddress: client.address!,
   toAddress: "core1...",

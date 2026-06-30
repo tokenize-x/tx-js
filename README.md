@@ -16,7 +16,7 @@ A JavaScript/TypeScript library for interacting with the **TX** blockchain. Buil
 ## Installation
 
 ```bash
-npm install @pulsara/tx-js
+npm install @tokenize-x/tx-js
 ```
 
 ## Quick Start
@@ -24,7 +24,7 @@ npm install @pulsara/tx-js
 ### Connect (query-only)
 
 ```typescript
-import { Client, CoreumNetwork } from "@pulsara/tx-js";
+import { Client, CoreumNetwork } from "@tokenize-x/tx-js";
 
 const client = new Client({ network: CoreumNetwork.TESTNET });
 await client.connect();
@@ -39,7 +39,7 @@ const balance = await client.queryClients?.bank.balance(
 ### Connect with browser wallet (Keplr, Cosmostation, or Leap)
 
 ```typescript
-import { Client, CoreumNetwork, ExtensionWallets } from "@pulsara/tx-js";
+import { Client, CoreumNetwork, ExtensionWallets } from "@tokenize-x/tx-js";
 
 const client = new Client({ network: CoreumNetwork.TESTNET });
 await client.connectWithExtension(ExtensionWallets.KEPLR);
@@ -50,7 +50,7 @@ console.log(client.address); // Connected wallet address
 ### Connect with mnemonic
 
 ```typescript
-import { Client, CoreumNetwork } from "@pulsara/tx-js";
+import { Client, CoreumNetwork } from "@tokenize-x/tx-js";
 
 const client = new Client({ network: CoreumNetwork.TESTNET });
 await client.connectWithMnemonic("your twelve or twenty four word mnemonic...");
@@ -59,7 +59,7 @@ await client.connectWithMnemonic("your twelve or twenty four word mnemonic...");
 ### Send a transaction
 
 ```typescript
-import { Client, Bank, CoreumNetwork } from "@pulsara/tx-js";
+import { Client, Bank, CoreumNetwork } from "@tokenize-x/tx-js";
 
 const client = new Client({ network: CoreumNetwork.TESTNET });
 await client.connectWithMnemonic(process.env.MNEMONIC!);

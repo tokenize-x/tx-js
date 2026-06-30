@@ -1,5 +1,5 @@
 {
-  "name": "@pulsara/tx-js",
+  "name": "@tokenize-x/tx-js",
   "version": "1.0.2",
   "description": "JS/TS library to easily interact with the TX blockchain",
   "main": "dist/main/index.js",
@@ -23,10 +23,10 @@
   "publishConfig": {
     "access": "public"
   },
-  "homepage": "https://github.com/PulsaraIO/tx-js",
+  "homepage": "https://github.com/tokenize-x/tx-js",
   "repository": {
     "type": "git",
-    "url": "https://github.com/PulsaraIO/tx-js.git"
+    "url": "https://github.com/tokenize-x/tx-js.git"
   },
   "scripts": {
     "build": "rm -rf ./dist && npm run build:main && npm run build:module",

@@ -53,7 +53,7 @@ await client.connect({ withWS: true });
 Connects using a browser extension wallet (Keplr, Cosmostation, or Leap). The extension is used to get an `OfflineSigner` and the client is created with it.
 
 ```typescript
-import { Client, ExtensionWallets } from "@pulsara/tx-js";
+import { Client, ExtensionWallets } from "@tokenize-x/tx-js";
 
 const client = new Client({ network: "testnet" });
 await client.connectWithExtension(ExtensionWallets.KEPLR);

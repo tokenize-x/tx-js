@@ -19,7 +19,7 @@ When using the SDK’s **Client** with `connectWithExtension()` or `connectWithM
 Returns an `AminoTypes` instance (from `@cosmjs/stargate`) with all Coreum Amino converters registered. Use it when you need to convert between protobuf and Amino JSON for Coreum messages.
 
 ```typescript
-import { createCoreumAminoTypes } from "@pulsara/tx-js";
+import { createCoreumAminoTypes } from "@tokenize-x/tx-js";
 import { AminoTypes } from "@cosmjs/stargate";
 
 const aminoTypes = createCoreumAminoTypes();
@@ -52,7 +52,7 @@ You can merge Coreum converters into your own `AminoTypes` or use the combined o
 Example: combine with your own converters:
 
 ```typescript
-import { createCoreumAminoTypes } from "@pulsara/tx-js";
+import { createCoreumAminoTypes } from "@tokenize-x/tx-js";
 import { AminoTypes } from "@cosmjs/stargate";
 
 const customAminoTypes = new AminoTypes({
@@ -116,7 +116,7 @@ Amino uses string type names (AminoType); the SDK maps each Coreum TypeUrl to th
 ## Example (from examples/amino-types-usage.ts)
 
 ```typescript
-import { createCoreumAminoTypes, FT, DEX, NFT } from "@pulsara/tx-js";
+import { createCoreumAminoTypes, FT, DEX, NFT } from "@tokenize-x/tx-js";
 import { AminoTypes } from "@cosmjs/stargate";
 
 const aminoTypes = createCoreumAminoTypes();

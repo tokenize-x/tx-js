@@ -9,7 +9,7 @@ The SDK supports browser extension wallets (Keplr, Cosmostation, Leap) and mnemo
 Use the Client’s built-in wallet flow so the SDK handles chain suggestion and signer creation:
 
 ```typescript
-import { Client, CoreumNetwork, ExtensionWallets } from "@pulsara/tx-js";
+import { Client, CoreumNetwork, ExtensionWallets } from "@tokenize-x/tx-js";
 
 const client = new Client({ network: CoreumNetwork.TESTNET });
 
@@ -71,8 +71,8 @@ For Keplr, the Client uses `window.getOfflineSignerAuto(chain_id)` after `connec
 Example (custom flow with Cosmostation):
 
 ```typescript
-import { connectCosmostation, getCosmosOfflineSigner } from "@pulsara/tx-js";
-import { COREUM_CONFIG } from "@pulsara/tx-js";
+import { connectCosmostation, getCosmosOfflineSigner } from "@tokenize-x/tx-js";
+import { COREUM_CONFIG } from "@tokenize-x/tx-js";
 
 const config = COREUM_CONFIG.testnet;
 await connectCosmostation(config);

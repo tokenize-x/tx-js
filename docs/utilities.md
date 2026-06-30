@@ -13,7 +13,7 @@ All use `bignumber.js` for precision.
 Converts minimal denom (ucore) to human-readable CORE (divides by 1,000,000).
 
 ```typescript
-import { ucoreToCORE } from "@pulsara/tx-js";
+import { ucoreToCORE } from "@tokenize-x/tx-js";
 ucoreToCORE("1000000"); // "1"
 ```
 
@@ -30,7 +30,7 @@ ucoreToCORE("1000000"); // "1"
 Converts CORE to ucore (multiplies by 1,000,000).
 
 ```typescript
-import { coreToUCORE } from "@pulsara/tx-js";
+import { coreToUCORE } from "@tokenize-x/tx-js";
 coreToUCORE("1"); // "1000000"
 ```
 
@@ -47,7 +47,7 @@ coreToUCORE("1"); // "1000000"
 Converts a percentage (0–100) to the 18-decimal royalty rate format used by the NFT module (e.g. 5 → 5% of 10^18).
 
 ```typescript
-import { parseFloatToRoyaltyRate } from "@pulsara/tx-js";
+import { parseFloatToRoyaltyRate } from "@tokenize-x/tx-js";
 parseFloatToRoyaltyRate(5); // "50000000000000000"
 parseFloatToRoyaltyRate("2.5"); // for 2.5%
 ```
@@ -67,7 +67,7 @@ Use in `NFT.IssueClass({ ..., royaltyRate: parseFloatToRoyaltyRate(5) })`.
 Converts subunit amount to unit (human-readable) using the given decimal precision.
 
 ```typescript
-import { subunitToUnit } from "@pulsara/tx-js";
+import { subunitToUnit } from "@tokenize-x/tx-js";
 subunitToUnit("1000000", 6); // "1"
 ```
 
@@ -85,7 +85,7 @@ subunitToUnit("1000000", 6); // "1"
 Converts unit amount to subunit (smallest unit).
 
 ```typescript
-import { unitToSubunit } from "@pulsara/tx-js";
+import { unitToSubunit } from "@tokenize-x/tx-js";
 unitToSubunit("1", 6); // "1000000"
 ```
 
@@ -105,7 +105,7 @@ unitToSubunit("1", 6); // "1000000"
 Checks that the string is a valid Coreum bech32 address (prefix `core`, `testcore`, or `devcore`).
 
 ```typescript
-import { isValidCoreumAddress } from "@pulsara/tx-js";
+import { isValidCoreumAddress } from "@tokenize-x/tx-js";
 isValidCoreumAddress("core1..."); // true
 isValidCoreumAddress("cosmos1..."); // false
 ```
@@ -123,7 +123,7 @@ isValidCoreumAddress("cosmos1..."); // false
 Creates a CosmJS `DirectSecp256k1HdWallet` (OfflineDirectSigner) with the Coreum derivation path `m/44'/990'/0'/0/0`.
 
 ```typescript
-import { generateWalletFromMnemonic, CoreumPrefixes } from "@pulsara/tx-js";
+import { generateWalletFromMnemonic, CoreumPrefixes } from "@tokenize-x/tx-js";
 const signer = await generateWalletFromMnemonic(
   "word1 word2 ... word24",
   CoreumPrefixes.TESTNET
@@ -144,7 +144,7 @@ const signer = await generateWalletFromMnemonic(
 Builds a multisig account from a list of base64-encoded pubkeys and a threshold. Used internally by `client.createMultisigAccount()`; you can use it directly if you already have pubkeys.
 
 ```typescript
-import { generateMultisigFromPubkeys } from "@pulsara/tx-js";
+import { generateMultisigFromPubkeys } from "@tokenize-x/tx-js";
 const multisig = generateMultisigFromPubkeys(
   [pubkey1, pubkey2, pubkey3],
   2,
@@ -170,7 +170,7 @@ const multisig = generateMultisigFromPubkeys(
 Maps an array of FT `Feature` enum values to a boolean object (minting, freezing, burning, whitelisting).
 
 ```typescript
-import { parseTokenFeatures, Feature } from "@pulsara/tx-js";
+import { parseTokenFeatures, Feature } from "@tokenize-x/tx-js";
 const flags = parseTokenFeatures([Feature.minting, Feature.burning]);
 // { minting: true, freezing: false, burning: true, whitelisting: false }
 ```
@@ -188,7 +188,7 @@ const flags = parseTokenFeatures([Feature.minting, Feature.burning]);
 Maps an array of NFT `ClassFeature` enum values to a boolean object.
 
 ```typescript
-import { parseClassFeatures, ClassFeature } from "@pulsara/tx-js";
+import { parseClassFeatures, ClassFeature } from "@tokenize-x/tx-js";
 const flags = parseClassFeatures([
   ClassFeature.burning,
   ClassFeature.soulbound,
@@ -209,7 +209,7 @@ const flags = parseClassFeatures([
 Converts a string to a Cosmos `Any` containing `coreum.asset.nft.v1.DataBytes`. Used when setting NFT class or token `data` (e.g. arbitrary JSON or string payload).
 
 ```typescript
-import { convertStringToAny } from "@pulsara/tx-js";
+import { convertStringToAny } from "@tokenize-x/tx-js";
 const anyData = convertStringToAny(JSON.stringify({ key: "value" }));
 // Use in NFT.IssueClass or NFT.Mint as data: anyData
 ```
@@ -231,7 +231,7 @@ const anyData = convertStringToAny(JSON.stringify({ key: "value" }));
 Parses the raw event map from a WebSocket subscription into a nested object. Keys are split on `.`; values are parsed as JSON when possible. Used internally by `client.subscribeToEvent()` so you get structured `data.events` in the callback.
 
 ```typescript
-import { parseSubscriptionEvents } from "@pulsara/tx-js";
+import { parseSubscriptionEvents } from "@tokenize-x/tx-js";
 const parsed = parseSubscriptionEvents({
   "transfer.amount": ["100"],
   "transfer.recipient": ["core1..."],

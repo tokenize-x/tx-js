@@ -66,7 +66,7 @@ Places an order on the native DEX.
 Example:
 
 ```typescript
-import { Client, DEX } from "@pulsara/tx-js";
+import { Client, DEX } from "@tokenize-x/tx-js";
 
 // Use numeric enum values: OrderType 1 = LIMIT, Side 1 = BUY, TimeInForce 1 = GTC
 const msg = DEX.PlaceOrder({

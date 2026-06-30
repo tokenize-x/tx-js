@@ -27,7 +27,7 @@ All builders return `{ typeUrl, value }` for `client.sendTx([msg])` or `client.s
 Example:
 
 ```typescript
-import { CosmWasm } from "@pulsara/tx-js";
+import { CosmWasm } from "@tokenize-x/tx-js";
 
 const msg = CosmWasm.ExecuteContract({
   sender: client.address!,
