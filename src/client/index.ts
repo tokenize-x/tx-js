@@ -26,7 +26,12 @@ import {
   GeneratedType,
   OfflineSigner,
   Registry,
+  encodePubkey,
+  isOfflineDirectSigner,
+  makeAuthInfoBytes,
+  makeSignDoc,
 } from "@cosmjs/proto-signing";
+import { encodeSecp256k1Pubkey } from "@cosmjs/amino";
 import { Tendermint37Client, WebsocketClient } from "@cosmjs/tendermint-rpc";
 import { TxRaw, AuthInfo, SignerInfo, Fee, TxBody } from "../cosmos";
 import { SignMode } from "cosmjs-types/cosmos/tx/signing/v1beta1/signing";
@@ -36,12 +41,20 @@ import {
   TxBody as TxBodyProto,
   AuthInfo as AuthInfoProto,
 } from "cosmjs-types/cosmos/tx/v1beta1/tx";
-import { ExtensionWallets, FeeCalculation, ClientQueryClient } from "../types";
+import {
+  ExtensionWallets,
+  FeeCalculation,
+  ClientQueryClient,
+  SendTxOptions,
+  UnorderedTxOptions,
+} from "../types";
 import {
   assertValidCoreumAddress,
   generateWalletFromMnemonic,
   generateMultisigFromPubkeys,
   isValidCoreumAddress,
+  encodeUnorderedTxBody,
+  UnorderedTimeoutClock,
 } from "../utils";
 import { validateRpcEndpoint, validateWsEndpoint } from "../utils/endpoints";
 import { TxJsError, toTxJsError, normalizeWalletError } from "../errors";
@@ -61,7 +74,7 @@ import {
   setupStakingExtension,
   setupTxExtension,
 } from "@cosmjs/stargate";
-import { toBech32 } from "@cosmjs/encoding";
+import { fromBase64, toBech32 } from "@cosmjs/encoding";
 import { sha256, ripemd160 } from "@cosmjs/crypto";
 import {
   setupBankExtension,
@@ -109,6 +122,8 @@ export class Client {
   private _queryClient: ClientQueryClient | undefined;
   private _wsClient: WebsocketClient | undefined;
   private _client: SigningCosmWasmClient | StargateClient | undefined;
+  private _offlineSigner: OfflineSigner | undefined;
+  private readonly _unorderedTimeouts = new UnorderedTimeoutClock();
   private _address: string | undefined;
   private _feeModel: FeeModelClient | undefined;
   private _eventSequence = 0;
@@ -173,6 +188,7 @@ export class Client {
     }
 
     this._address = undefined;
+    this._offlineSigner = undefined;
     this._queryClient = undefined;
     this._eventSequence = 0;
     this._feeModel = undefined;
@@ -383,11 +399,19 @@ export class Client {
 
   async sendTx(
     msgs: readonly EncodeObject[],
-    memo?: string
+    memo?: string,
+    options?: SendTxOptions
   ): Promise<DeliverTxResponse> {
     try {
       this._isSigningClientInit();
       this._assertConnectedAddress();
+
+      if (options?.unordered) {
+        const signed = await this.signUnorderedTx(msgs, memo, options);
+        return await (this._client as SigningCosmWasmClient).broadcastTx(
+          TxRaw.encode(signed).finish()
+        );
+      }
 
       const { fee } = await this.getTxFee(msgs);
 
@@ -434,6 +458,91 @@ export class Client {
       );
     } catch (error) {
       throw toTxJsError("signTx", error);
+    }
+  }
+
+  /**
+   * Signs an unordered transaction (Cosmos SDK v0.53, ADR-070): the body carries
+   * `unordered = true` and a timeout timestamp, and the signer's sequence is 0, so several
+   * transactions from one account can be signed and broadcast in parallel.
+   *
+   * Needs a direct signer (mnemonic or `OfflineDirectSigner`); Amino-only wallets cannot sign
+   * this. Each call takes a timeout unique to this client, since the chain rejects two
+   * unordered transactions from one signer with the same timeout.
+   */
+  async signUnorderedTx(
+    msgs: readonly EncodeObject[],
+    memo = "",
+    options?: UnorderedTxOptions
+  ): Promise<TxRaw> {
+    try {
+      this._isSigningClientInit();
+      this._assertConnectedAddress();
+
+      const signer = this._offlineSigner;
+      if (!signer || !isOfflineDirectSigner(signer)) {
+        throw new Error(
+          "Unordered transactions need a direct signer (SIGN_MODE_DIRECT)"
+        );
+      }
+
+      const address = this._address!;
+      const accountData = (await signer.getAccounts()).find(
+        (account) => account.address === address
+      );
+      if (!accountData) {
+        throw new Error(`Signer has no account for address ${address}`);
+      }
+      if (accountData.algo !== "secp256k1") {
+        throw new Error(
+          `Unordered transactions support secp256k1 keys only, got ${accountData.algo}`
+        );
+      }
+
+      const signingClient = this._client as SigningCosmWasmClient;
+      const account = await signingClient.getAccount(address);
+      if (!account) {
+        throw new Error(`Account not found for address ${address}`);
+      }
+
+      const timeoutTimestampNanos = options?.timeoutTimestamp
+        ? BigInt(options.timeoutTimestamp.getTime()) * BigInt(1_000_000)
+        : this._unorderedTimeouts.next(Date.now(), options?.timeoutMs);
+      const registry = Client.getRegistry();
+      const bodyBytes = encodeUnorderedTxBody({
+        messages: msgs.map((msg) => registry.encodeAsAny(msg)),
+        memo: this._formatMemo(memo),
+        timeoutTimestampNanos,
+      });
+      const pubkey = encodePubkey(encodeSecp256k1Pubkey(accountData.pubkey));
+
+      const gasWanted = await this._simulateUnordered(bodyBytes, pubkey);
+      const fee = calculateFee(gasWanted, await this._getGasPrice());
+      const authInfoBytes = makeAuthInfoBytes(
+        [{ pubkey, sequence: 0 }],
+        fee.amount,
+        gasWanted,
+        fee.granter,
+        fee.payer
+      );
+
+      const { signature, signed } = await signer.signDirect(
+        address,
+        makeSignDoc(
+          bodyBytes,
+          authInfoBytes,
+          this._config.chain_id,
+          account.accountNumber
+        )
+      );
+
+      return TxRaw.fromPartial({
+        bodyBytes: signed.bodyBytes,
+        authInfoBytes: signed.authInfoBytes,
+        signatures: [fromBase64(signature.signature)],
+      });
+    } catch (error) {
+      throw toTxJsError("signUnorderedTx", error);
     }
   }
 
@@ -661,6 +770,47 @@ export class Client {
     return TxRaw.encode(txRaw).finish();
   }
 
+  /**
+   * Gas for an unordered transaction, simulated with the same body it will be signed with.
+   * Simulation runs on a cached state, so the timeout is not consumed and stays usable.
+   */
+  private async _simulateUnordered(
+    bodyBytes: Uint8Array,
+    pubkey: ReturnType<typeof encodePubkey>
+  ): Promise<number> {
+    if (!this._queryClient) {
+      throw new Error("Query client not initialized. Call connect() first.");
+    }
+
+    const authInfoBytes = makeAuthInfoBytes(
+      [{ pubkey, sequence: 0 }],
+      [],
+      0,
+      undefined,
+      undefined
+    );
+    const txBytes = TxRaw.encode(
+      TxRaw.fromPartial({
+        bodyBytes,
+        authInfoBytes,
+        signatures: [new Uint8Array()],
+      })
+    ).finish();
+
+    const txService = new TxServiceClient(
+      createProtobufRpcClient(this._queryClient)
+    );
+    const { gasInfo } = await txService.Simulate({ txBytes });
+    if (!gasInfo) {
+      throw new Error("Simulation failed: no gas info returned");
+    }
+
+    return new BigNumber(gasInfo.gasUsed.toString())
+      .multipliedBy(1.2)
+      .integerValue(BigNumber.ROUND_CEIL)
+      .toNumber();
+  }
+
   private _isSigningClientInit() {
     if (!this._client || !isSigningClient(this._client)) {
       throw new Error("Signing Client is not initialized");
@@ -719,6 +869,7 @@ export class Client {
 
     const [{ address }] = await offlineSigner.getAccounts();
     this._address = address;
+    this._offlineSigner = offlineSigner;
 
     if (this._tmClient) {
       this._client = await SigningCosmWasmClient.createWithSigner(
