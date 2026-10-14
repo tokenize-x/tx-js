@@ -74,6 +74,28 @@ const result = await client.sendTx([msg]);
 console.log(result.transactionHash);
 ```
 
+### Send unordered transactions in parallel
+
+Normal transactions from one account must go one after another. Unordered transactions ([ADR-070](https://docs.cosmos.network/sdk/latest/reference/architecture/adr-070-unordered-account)) can be sent at the same time.
+
+```typescript
+import { TxRaw } from "@tokenize-x/tx-js";
+
+// Send several at once from the same account.
+const results = await Promise.all(
+  [msgA, msgB, msgC].map((msg) => client.sendTx([msg], "", { unordered: true }))
+);
+
+// Expire after 1 minute instead of the default 5 (maximum 10).
+await client.sendTx([msg], "", { unordered: true, timeoutMs: 60_000 });
+
+// Sign without broadcasting, then broadcast yourself.
+const signed = await client.signUnorderedTx([msg], "memo");
+await client.broadcastTx(TxRaw.encode(signed).finish());
+```
+
+Unordered transactions need a mnemonic or another direct signer; Amino-only wallets cannot sign them.
+
 ### Query FT token info
 
 ```typescript
